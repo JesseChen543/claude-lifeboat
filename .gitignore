@@ -1,0 +1,8 @@
+# API keys — never commit these
+.api_keys.json
+*.api_keys.json
+
+# Runtime artifacts
+_restart_vscode.ps1
+__pycache__/
+*.pyc

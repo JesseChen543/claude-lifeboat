@@ -1,0 +1,9 @@
+{
+  "providers": {
+    "deepseek": {
+      "label": "DeepSeek (backup)",
+      "model": "deepseek-v4-pro[1m]",
+      "base_url": "https://api.deepseek.com/anthropic"
+    }
+  }
+}
