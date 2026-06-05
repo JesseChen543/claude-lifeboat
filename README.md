@@ -32,7 +32,7 @@ Switching back to Claude Pro is the same command.
 **1. Clone the repo**
 
 ```
-git clone https://github.com/jessechen959/claude-code-fallback
+git clone https://github.com/JesseChen543/claude-code-fallback
 ```
 
 **2. Copy the files to a folder in your PATH**
