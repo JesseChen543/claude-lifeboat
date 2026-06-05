@@ -91,7 +91,7 @@ Works with any Claude Code installation:
 
 ## Adding providers
 
-Provider definitions live in `backends.json` — no Python required:
+Provider definitions live in `backends.json`:
 
 ```json
 {
