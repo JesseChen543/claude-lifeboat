@@ -1,2 +1,2 @@
 @echo off
-python "%~dp0switch_model.py" %*
+py "%~dp0switch_model.py" %*

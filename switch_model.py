@@ -15,6 +15,8 @@ Usage:
 """
 
 import json
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -54,23 +56,125 @@ def set_user_env(name: str, value: str | None) -> None:
 
 # ── VSCode restart ────────────────────────────────────────────────────
 
-def _find_vscode() -> str | None:
+def _find_vscode_cli() -> str | None:
+    """Prefer the .cmd wrapper over the exe — it handles single-instance IPC correctly."""
     candidates = [
-        Path.home() / "AppData/Local/Programs/Microsoft VS Code/Code.exe",
-        Path("C:/Program Files/Microsoft VS Code/Code.exe"),
-        Path.home() / "AppData/Local/Programs/Microsoft VS Code Insiders/Code - Insiders.exe",
+        Path.home() / "AppData/Local/Programs/Microsoft VS Code/bin/code.cmd",
+        Path("C:/Program Files/Microsoft VS Code/bin/code.cmd"),
+        Path.home() / "AppData/Local/Programs/Microsoft VS Code Insiders/bin/code-insiders.cmd",
+        Path.home() / "AppData/Local/Programs/cursor/resources/app/bin/cursor.cmd",
+        Path.home() / "AppData/Local/cursor/resources/app/bin/cursor.cmd",
     ]
     for p in candidates:
         if p.exists():
             return str(p)
-    code_cmd = shutil.which("code")
-    if code_cmd:
-        return code_cmd
+    for name in ("code", "cursor"):
+        cmd = shutil.which(name)
+        if cmd:
+            return cmd
     return None
 
 
-def _get_open_workspaces() -> list[str]:
-    """Read open workspace folders from VSCode's storage.json before killing."""
+def _resolve_workspace(path: str) -> list[str]:
+    """Expand untitled internal workspaces into individual folders; leave named .code-workspace files as-is."""
+    roaming = Path.home() / "AppData/Roaming"
+    internal_dirs = [roaming / "Code/Workspaces", roaming / "Code - Insiders/Workspaces"]
+    p = Path(path)
+    if not any(p.is_relative_to(d) for d in internal_dirs if d.exists()):
+        return [path]
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        existing = [f["path"] for f in data.get("folders", []) if "path" in f and Path(f["path"]).exists()]
+        if existing:
+            return existing
+    except Exception:
+        pass
+    return [path]
+
+
+def _get_open_workspaces_from_status(code_cli: str) -> list[list[str]]:
+    """Parse 'code --status' Workspace Stats for open folders; resolve base-names via storage.json."""
+    try:
+        result = subprocess.run([code_cli, "--status"], capture_output=True, text=True, timeout=15)
+
+        folder_names: list[str] = []
+        in_stats = False
+        for line in result.stdout.splitlines():
+            if "Workspace Stats:" in line:
+                in_stats = True
+                continue
+            if in_stats:
+                m = re.search(r'\|\s+Folder \(([^)]+)\):', line)
+                if m:
+                    folder_names.append(m.group(1))
+        if not folder_names:
+            return []
+
+        storage_path = Path.home() / "AppData/Roaming/Code/User/globalStorage/storage.json"
+        if not storage_path.exists():
+            return []
+
+        # Build name→path map from windowsState (all open windows with full URIs),
+        data = json.loads(storage_path.read_text(encoding="utf-8"))
+        name_to_path: dict[str, str] = {}
+        all_windows = [data.get("windowsState", {}).get("lastActiveWindow")] + \
+                      data.get("windowsState", {}).get("openedWindows", [])
+        for win in all_windows:
+            if not win:
+                continue
+            uri = (win.get("folder") or win.get("workspace", {}).get("configPath")
+                   or win.get("workspaceIdentifier", {}).get("configURIPath") or "")
+            if not uri:
+                continue
+            try:
+                path = unquote(urlparse(uri).path).lstrip("/")
+                if Path(path).exists():
+                    name_to_path[Path(path).name] = path.replace("\\", "/")
+            except Exception:
+                pass
+
+        seen: set[str] = set()
+        groups: list[list[str]] = []
+        for name in folder_names:
+            full = name_to_path.get(name)
+            if full and full not in seen:
+                seen.add(full)
+                groups.append([full])
+        # If we couldn't resolve every open folder, fall through to the next
+        if len(groups) < len(folder_names):
+            return []
+        return groups
+    except Exception:
+        return []
+
+
+def _parse_vscode_cmdlines(cmdlines: list[str]) -> list[list[str]]:
+    """Extract open folder paths from VSCode main-process command lines."""
+    seen: set[str] = set()
+    groups: list[list[str]] = []
+    for line in cmdlines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            args = shlex.split(line, posix=False)
+        except ValueError:
+            args = line.split()
+        args = [a.strip('"').strip("'") for a in args]
+        for arg in args[1:]:  # skip executable
+            if arg.startswith("-"):
+                continue
+            p = Path(arg)
+            if (p.exists() and p.is_dir()) or (p.is_file() and p.suffix == ".code-workspace"):
+                norm = str(p).replace("\\", "/")
+                if norm not in seen:
+                    seen.add(norm)
+                    groups.append([norm])
+    return groups
+
+
+def _get_open_workspaces_from_storage() -> list[list[str]]:
+    """Fallback: read open workspaces from VSCode's storage.json."""
     candidates = [
         Path.home() / "AppData/Roaming/Code/User/globalStorage/storage.json",
         Path.home() / "AppData/Roaming/Code - Insiders/User/globalStorage/storage.json",
@@ -80,22 +184,54 @@ def _get_open_workspaces() -> list[str]:
         return []
     try:
         data = json.loads(storage.read_text(encoding="utf-8"))
-        state = data.get("windowsState", {})
         seen: set[str] = set()
-        folders: list[str] = []
-        for win in [state.get("lastActiveWindow")] + state.get("openedWindows", []):
+        groups: list[list[str]] = []
+        for win in [data.get("windowsState", {}).get("lastActiveWindow")] + data.get("windowsState", {}).get("openedWindows", []):
             if not win:
                 continue
-            uri = win.get("folder") or win.get("workspace", {}).get("configPath", "")
+            uri = (win.get("folder") or win.get("workspace", {}).get("configPath")
+                   or win.get("workspaceIdentifier", {}).get("configURIPath") or "")
             if not uri:
                 continue
             path = unquote(urlparse(uri).path).lstrip("/")
-            if Path(path).exists() and path not in seen:
-                seen.add(path)
-                folders.append(path)
-        return folders
+            if not Path(path).exists():
+                continue
+            for resolved in _resolve_workspace(path):
+                if resolved not in seen:
+                    seen.add(resolved)
+                    groups.append([resolved])
+        return groups
     except Exception:
         return []
+
+
+def _get_open_workspaces() -> list[list[str]]:
+    """Return one [folder] group per open VSCode window, using the best available source."""
+    # code --status sees all windows including those opened via the UI
+    cli = _find_vscode_cli()
+    if cli:
+        groups = _get_open_workspaces_from_status(cli)
+        if groups:
+            return groups
+    # WMI captures command-line paths but misses windows opened via the UI
+    try:
+        result = subprocess.run(
+            ["powershell", "-Command",
+             "Get-WmiObject Win32_Process -Filter \"name='Code.exe'\" | "
+             "Where-Object { $_.CommandLine -and "
+             "$_.CommandLine -notmatch '--type=' -and "
+             "$_.CommandLine -notmatch '\\.js\\b' -and "
+             "$_.CommandLine -notmatch 'server\\.bundle' } | "
+             "Select-Object -ExpandProperty CommandLine"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            groups = _parse_vscode_cmdlines(result.stdout.strip().splitlines())
+            if groups:
+                return groups
+    except Exception:
+        pass
+    return _get_open_workspaces_from_storage()
 
 
 def restart_vscode(prompt: bool = True) -> None:
@@ -106,30 +242,31 @@ def restart_vscode(prompt: bool = True) -> None:
             print("  Skipped — restart VSCode manually to apply the change.")
             return
 
-    code_exe = _find_vscode()
-    workspaces = _get_open_workspaces()
-
-    if not code_exe:
-        print("  Could not find VSCode executable — open it manually.")
+    code_cli = _find_vscode_cli()
+    if not code_cli:
+        print("  Could not find VSCode/Cursor CLI — open it manually.")
         return
 
-    # Build the relaunch command — escape single quotes for PowerShell string literals
+    window_groups = _get_open_workspaces()
+
     def ps_escape(s: str) -> str:
         return s.replace("'", "''")
 
-    if workspaces:
-        workspace_args = "','".join(ps_escape(w) for w in workspaces)
-        launch = f"Start-Process -FilePath '{ps_escape(code_exe)}' -ArgumentList @('{workspace_args}')"
+    if window_groups:
+        launch_lines = []
+        for i, group in enumerate(window_groups):
+            for path in group:
+                launch_lines.append(f"& '{ps_escape(code_cli)}' '{ps_escape(path)}'")
+            if i < len(window_groups) - 1:
+                launch_lines.append("Start-Sleep -Milliseconds 500")
+        launch = "\n".join(launch_lines)
     else:
-        launch = f"Start-Process -FilePath '{ps_escape(code_exe)}'"
+        launch = f"& '{ps_escape(code_cli)}'"
 
-    # Write a detached helper script that survives VSCode's terminal closing.
-    # It waits 1s for the terminal to exit, kills VSCode, waits for processes
-    # to fully terminate, then relaunches and deletes itself.
     helper = Path.home() / ".claude" / "_restart_vscode.ps1"
     helper.parent.mkdir(parents=True, exist_ok=True)
-    # Inject user env vars into the helper's process before launching VSCode,
-    # because Start-Process inherits the helper's env — not the registry.
+    # Inject user env vars before launching VSCode — Start-Process inherits the
+    # helper's env, not the registry, so we sync them explicitly.
     sync_env = "\n".join(
         f'$env:{v} = [System.Environment]::GetEnvironmentVariable("{v}", "User")'
         for v in BACKEND_VARS
@@ -141,17 +278,15 @@ def restart_vscode(prompt: bool = True) -> None:
         f"Start-Sleep 2\n"
         f"{sync_env}\n"
         f"{launch}\n"
-        f"Remove-Item '{helper}'\n",
-        encoding="utf-8"
+        f"Remove-Item '{ps_escape(str(helper))}'\n",
+        encoding="utf-8",
     )
 
-    # Launch in a new independent console so it survives when VSCode (and its
-    # terminal) is killed. CREATE_NEW_CONSOLE gives it its own window/session.
+    # CREATE_NEW_CONSOLE lets the helper survive when VSCode (and this terminal) is killed.
     subprocess.Popen(
         ["powershell", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", str(helper)],
         creationflags=subprocess.CREATE_NEW_CONSOLE,
     )
-
     print("  VSCode restarting...")
 
 
@@ -168,8 +303,7 @@ def load_json(path: Path) -> dict:
 
 def save_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-    path.write_text(payload, encoding="utf-8")
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def load_backends() -> dict:
