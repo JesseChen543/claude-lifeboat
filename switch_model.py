@@ -11,7 +11,6 @@ Usage:
     switch-model status             Show current active provider
     switch-model claude             Force switch to Claude Pro
     switch-model <provider>         Force switch to a named provider
-    switch-model restart-vscode     Restart VSCode without switching provider
 """
 
 import json
@@ -114,9 +113,10 @@ def _get_open_workspaces_from_status(code_cli: str) -> list[list[str]]:
         if not storage_path.exists():
             return []
 
-        # Build name→path map from windowsState (all open windows with full URIs),
+        # Build a (basename, full_path) pool from windowsState so two folders
+        # with the same basename each get their own full path (consume-on-match).
         data = json.loads(storage_path.read_text(encoding="utf-8"))
-        name_to_path: dict[str, str] = {}
+        pool: list[tuple[str, str]] = []
         all_windows = [data.get("windowsState", {}).get("lastActiveWindow")] + \
                       data.get("windowsState", {}).get("openedWindows", [])
         for win in all_windows:
@@ -129,15 +129,19 @@ def _get_open_workspaces_from_status(code_cli: str) -> list[list[str]]:
             try:
                 path = unquote(urlparse(uri).path).lstrip("/")
                 if Path(path).exists():
-                    name_to_path[Path(path).name] = path.replace("\\", "/")
+                    pool.append((Path(path).name, path.replace("\\", "/")))
             except Exception:
                 pass
 
         seen: set[str] = set()
         groups: list[list[str]] = []
         for name in folder_names:
-            full = name_to_path.get(name)
-            if full and full not in seen:
+            # Find and consume the first pool entry matching this basename
+            idx = next((i for i, (n, _) in enumerate(pool) if n == name), None)
+            if idx is None:
+                continue
+            _, full = pool.pop(idx)
+            if full not in seen:
                 seen.add(full)
                 groups.append([full])
         # If we couldn't resolve every open folder, fall through to the next
@@ -445,8 +449,7 @@ USAGE = """Usage:
     switch-model setup [provider]   Store a provider's API key (one-time)
     switch-model status             Show current provider
     switch-model claude             Force switch to Claude Pro
-    switch-model <provider>         Force switch to named provider (see backends.json)
-    switch-model restart-vscode     Restart VSCode without switching"""
+    switch-model <provider>         Force switch to named provider (see backends.json)"""
 
 
 def main():
@@ -462,8 +465,6 @@ def main():
         cmd_claude()
     elif cmd == "status":
         cmd_status()
-    elif cmd == "restart-vscode":
-        restart_vscode(prompt=False)
     else:
         backends = load_backends()
         if cmd in backends:
