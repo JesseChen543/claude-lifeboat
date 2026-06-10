@@ -20,15 +20,29 @@ import shutil
 import subprocess
 import sys
 import winreg
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 KEYS_FILE = Path.home() / ".claude" / ".api_keys.json"
 BACKENDS_FILE = Path(__file__).parent / "backends.json"
+LOG_FILE = Path.home() / ".claude" / "switch_model.log"
 
 BACKEND_VARS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL")
 
 VSCODE_PROCESSES = ["Code.exe", "Code - Insiders.exe"]
+
+
+# ── Logging ───────────────────────────────────────────────────────────
+
+def log(msg: str) -> None:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {msg}\n")
+    except Exception:
+        pass
 
 
 # ── Windows user env helpers ──────────────────────────────────────────
@@ -211,17 +225,11 @@ def _get_open_workspaces_from_storage() -> list[list[str]]:
 
 def _get_open_workspaces() -> list[list[str]]:
     """Return one [folder] group per open VSCode window, using the best available source."""
-    # code --status sees all windows including those opened via the UI
-    cli = _find_vscode_cli()
-    if cli:
-        groups = _get_open_workspaces_from_status(cli)
-        if groups:
-            return groups
-    # WMI captures command-line paths but misses windows opened via the UI
+    # WMI is fast and covers windows opened from the command line
     try:
         result = subprocess.run(
             ["powershell", "-Command",
-             "Get-WmiObject Win32_Process -Filter \"name='Code.exe'\" | "
+             "Get-CimInstance Win32_Process -Filter \"name='Code.exe'\" | "
              "Where-Object { $_.CommandLine -and "
              "$_.CommandLine -notmatch '--type=' -and "
              "$_.CommandLine -notmatch '\\.js\\b' -and "
@@ -232,10 +240,24 @@ def _get_open_workspaces() -> list[list[str]]:
         if result.returncode == 0 and result.stdout.strip():
             groups = _parse_vscode_cmdlines(result.stdout.strip().splitlines())
             if groups:
+                log(f"workspace detection: WMI found {len(groups)} window(s): {[g[0] for g in groups]}")
                 return groups
     except Exception:
         pass
-    return _get_open_workspaces_from_storage()
+    # storage.json is a fast file read and covers UI-opened windows
+    groups = _get_open_workspaces_from_storage()
+    if groups:
+        log(f"workspace detection: storage.json found {len(groups)} window(s): {[g[0] for g in groups]}")
+        return groups
+    # code --status is the most accurate but spawns a VSCode process (slow)
+    cli = _find_vscode_cli()
+    if cli:
+        groups = _get_open_workspaces_from_status(cli)
+        if groups:
+            log(f"workspace detection: code --status found {len(groups)} window(s): {[g[0] for g in groups]}")
+            return groups
+    log("workspace detection: no open workspaces found")
+    return []
 
 
 def restart_vscode(prompt: bool = True) -> None:
@@ -243,11 +265,13 @@ def restart_vscode(prompt: bool = True) -> None:
         print("\nSave any unsaved work in VSCode first.")
         answer = input("Restart VSCode now? [Y/n]: ").strip().lower()
         if answer and answer not in ("y", "yes"):
+            log("restart: skipped by user")
             print("  Skipped — restart VSCode manually to apply the change.")
             return
 
     code_cli = _find_vscode_cli()
     if not code_cli:
+        log("restart: VSCode/Cursor CLI not found")
         print("  Could not find VSCode/Cursor CLI — open it manually.")
         return
 
@@ -262,7 +286,7 @@ def restart_vscode(prompt: bool = True) -> None:
             for path in group:
                 launch_lines.append(f"& '{ps_escape(code_cli)}' '{ps_escape(path)}'")
             if i < len(window_groups) - 1:
-                launch_lines.append("Start-Sleep -Milliseconds 500")
+                launch_lines.append("Start-Sleep -Seconds 3")
         launch = "\n".join(launch_lines)
     else:
         launch = f"& '{ps_escape(code_cli)}'"
@@ -291,6 +315,7 @@ def restart_vscode(prompt: bool = True) -> None:
         ["powershell", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", str(helper)],
         creationflags=subprocess.CREATE_NEW_CONSOLE,
     )
+    log(f"restart: helper launched, restoring {len(window_groups)} window(s)")
     print("  VSCode restarting...")
 
 
@@ -398,6 +423,7 @@ def cmd_switch(provider: str, backends: dict):
     set_user_env("ANTHROPIC_MODEL", cfg["model"])
     set_user_env("ANTHROPIC_BASE_URL", cfg["base_url"])
 
+    log(f"switch → {provider}: model={cfg['model']} endpoint={cfg['base_url']}")
     print(f"OK Now using: {cfg['label']}")
     print(f"  Model:    {cfg['model']}")
     print(f"  Endpoint: {cfg['base_url']}")
@@ -412,6 +438,7 @@ def cmd_claude():
             removed.append(var)
 
     if removed:
+        log("switch → claude: reverted to built-in auth")
         print("OK Now using: Claude Pro (built-in auth)")
         restart_vscode()
     else:
