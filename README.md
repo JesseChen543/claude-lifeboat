@@ -33,17 +33,16 @@ Switching back to Claude Pro is the same command.
 
 ```
 git clone https://github.com/JesseChen543/claude-lifeboat
+cd claude-lifeboat
 ```
 
-**2. Copy the files to a folder in your PATH**
+**2. Run the installer**
 
-Copy these three files into any folder already in your PATH — for example `C:\Users\You\.local\bin\`:
+```
+.\install.ps1
+```
 
-- `switch-model.bat`
-- `switch_model.py`
-- `backends.json`
-
-That's it. The bat finds the python file automatically using `%~dp0`.
+This copies `switch-model.bat`, `switch_model.py`, and `backends.json` to `%APPDATA%\Microsoft\WindowsApps\`, which is already on your PATH — no PATH changes needed.
 
 **3. Get a fallback API key**
 
