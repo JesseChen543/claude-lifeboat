@@ -1,26 +1,25 @@
 # claude-lifeboat
 
-Instantly switch Claude Code between your Claude Pro subscription and a fallback API endpoint (DeepSeek or any Anthropic-compatible backend) — with automatic VSCode restart.
+Instantly switch Claude Code between your Claude Pro subscription and a fallback API endpoint (DeepSeek or any Anthropic-compatible backend) — per project, no restart needed.
 
-Built for Claude Code Pro users who want to keep working when they hit their 5-hour usage limit.
+Built for Claude Code Pro users who want to keep working when they hit their 5-hour usage limit, or run two projects simultaneously on different models.
 
 ---
 
 ## How it works
 
-When you hit your Claude Pro limit, run `switch-model`. It:
+When you hit your Claude Pro limit (or want a different model for a project), run `switch-model` from that project's directory. It:
 
-1. Writes your fallback API credentials to Windows user environment variables
-2. Kills VSCode and relaunches it so the new credentials take effect
-3. Claude Code picks up the new endpoint on startup — no manual config needed
+1. Writes your fallback API credentials to `.vscode/settings.json` in the current project
+2. VSCode picks up the change immediately — no restart needed
 
-Switching back to Claude Pro is the same command.
+Each project gets its own setting. Two projects can run different models at the same time.
 
 ---
 
 ## Requirements
 
-- Windows (uses the registry, PowerShell, and `taskkill`)
+- Windows
 - Python 3.10+
 - Claude Code with a Pro subscription
 - A fallback API key (DeepSeek or any Anthropic-compatible endpoint)
@@ -42,7 +41,7 @@ cd claude-lifeboat
 .\install.ps1
 ```
 
-This copies `switch-model.bat`, `switch_model.py`, and `backends.json` to `%APPDATA%\Microsoft\WindowsApps\`, which is already on your PATH — no PATH changes needed.
+This copies `switch-model.bat`, `switch_model.py`, and `backends.json` to `%LOCALAPPDATA%\Microsoft\WindowsApps\`, which is already on your PATH — no PATH changes needed.
 
 **3. Get a fallback API key**
 
@@ -60,31 +59,24 @@ You'll be prompted to paste your API key:
 DeepSeek (backup) API key: sk-xxxxxxxxxxxxxxxx
 ```
 
-The key is saved to `~/.claude/.api_keys.json` (git-ignored, never committed). It is never written to `backends.json` or any tracked file.
-
-You can run `switch-model setup <provider>` again at any time to update a stored key.
+The key is saved to `~/.claude/.api_keys.json` (git-ignored, never committed).
 
 ---
 
 ## Usage
 
+All commands operate on the current directory by default. Use `--project <path>` to target a different folder.
+
 ```
-switch-model                    Toggle between Claude Pro and fallback
-switch-model status             Show which provider is active
-switch-model <provider>         Force switch to a named provider (e.g. deepseek)
-switch-model claude             Force switch back to Claude Pro
-switch-model setup [provider]   Store or update a provider's API key
+switch-model                       Toggle between Claude Pro and fallback
+switch-model <provider>            Switch to a named provider (e.g. deepseek)
+switch-model claude                Switch back to Claude Pro
+switch-model status                Show active provider for this project
+switch-model setup [provider]      Store or update a provider's API key
+switch-model --project <path>      Target a specific project directory
 ```
 
-When switching, you'll be prompted to save your work before VSCode restarts automatically.
-
-Works with any Claude Code installation:
-
-| Context | How to apply the switch |
-|---|---|
-| VSCode extension | Auto-restart handled by the tool |
-| Claude Code CLI | Open a new terminal after switching |
-| Claude desktop app | Restart it manually after switching |
+Each project's `.vscode/settings.json` is updated independently — open multiple projects in VSCode and they'll use different backends simultaneously.
 
 ---
 
@@ -120,20 +112,7 @@ Any provider with an Anthropic-compatible endpoint works.
 
 ---
 
-## How the VSCode restart works
-
-The script spawns a hidden PowerShell helper that outlives the VSCode terminal. It waits for the terminal to exit, kills `Code.exe`, injects the new environment variables into its own process, then relaunches VSCode — which inherits the correct credentials on startup.
-
----
-
 ## Security
 
 - Your API key is stored in plaintext at `~/.claude/.api_keys.json`. Keep this file private and never commit it (it is git-ignored by default).
-- Credentials are set as Windows user environment variables, visible to all processes running as your user.
-- `taskkill /f` force-closes VSCode — save your work before confirming the restart.
-
----
-
-## Why not use a proxy?
-
-Tools like [deepclaude](https://github.com/aattaran/deepclaude) run a local proxy for mid-session switching without restarting. That's more seamless but requires a background process. This tool is simpler — no proxy, no background service, just environment variables and a restart.
+- Credentials are written to `.vscode/settings.json` in each project. Don't commit that file if the project is public — add `.vscode/settings.json` to your `.gitignore`.

@@ -4,6 +4,11 @@
       "label": "DeepSeek (backup)",
       "model": "deepseek-v4-pro[1m]",
       "base_url": "https://api.deepseek.com/anthropic"
+    },
+    "glm52": {
+      "label": "GLM 5.2",
+      "model": "glm-5.2",
+      "base_url": "https://api.z.ai/api/anthropic"
     }
   }
 }

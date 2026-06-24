@@ -1,4 +1,4 @@
-$dest = "$env:APPDATA\Microsoft\WindowsApps"
+$dest = "$env:LOCALAPPDATA\Microsoft\WindowsApps"
 
 Copy-Item "$PSScriptRoot\switch-model.bat" "$dest\switch-model.bat" -Force
 Copy-Item "$PSScriptRoot\switch_model.py" "$dest\switch_model.py" -Force

@@ -6,3 +6,7 @@
 _restart_vscode.ps1
 __pycache__/
 *.pyc
+
+# Session state and workspace settings
+state/
+.vscode/
